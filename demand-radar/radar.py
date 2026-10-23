@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Personal demand research workbench; Python 3.12+, standard library only."""
 import argparse
+import discovery
 import concurrent.futures
 import datetime as dt
 import email.utils
@@ -51,6 +52,7 @@ def init():
    CREATE TABLE IF NOT EXISTS signals(id INTEGER PRIMARY KEY,title TEXT NOT NULL,body TEXT DEFAULT '',url TEXT DEFAULT '',source TEXT NOT NULL,kind TEXT NOT NULL,topic TEXT NOT NULL,published TEXT,created TEXT NOT NULL,fingerprint TEXT UNIQUE NOT NULL);
    CREATE TABLE IF NOT EXISTS opportunities(id INTEGER PRIMARY KEY,topic TEXT NOT NULL UNIQUE,title TEXT NOT NULL,buyer TEXT NOT NULL,test TEXT NOT NULL,deliverable TEXT NOT NULL,stage TEXT DEFAULT 'hypothesis',notes TEXT DEFAULT '',price REAL DEFAULT 0,views INTEGER DEFAULT 0,inquiries INTEGER DEFAULT 0,orders INTEGER DEFAULT 0,revenue REAL DEFAULT 0,cost REAL DEFAULT 0);
   ''')
+  discovery.init(c)
   for name,url in DEFAULT_SOURCES: c.execute('INSERT OR IGNORE INTO sources(name,url) VALUES(?,?)',(name,url))
   for topic,v in TOPICS.items(): c.execute('INSERT OR IGNORE INTO opportunities(topic,title,buyer,test,deliverable) VALUES(?,?,?,?,?)',(topic,v['product'],v['buyer'],v['test'],v['deliverable']))
 
@@ -150,8 +152,13 @@ def fetch_source(source):
 def collect():
  if not LOCK.acquire(blocking=False): return {'busy':True,'results':[]}
  try:
-  with connect() as c: sources=[dict(x) for x in c.execute('SELECT * FROM sources WHERE enabled=1')]
-  with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool: results=list(pool.map(fetch_source,sources))
+  with connect() as c:
+   sources=[dict(x) for x in c.execute('SELECT * FROM sources WHERE enabled=1')]
+   tasks=[dict(x) for x in c.execute('SELECT * FROM search_tasks WHERE enabled=1')]
+  def run_task(task):return discovery.run(task,connect,now,urllib.request.build_opener(PublicRedirect()),public_url,clean)
+  with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+   jobs=[pool.submit(run_task,t) for t in tasks]+[pool.submit(fetch_source,s) for s in sources]
+   results=[job.result() for job in jobs]
   return {'busy':False,'added':sum(x['added'] for x in results),'results':results}
  finally: LOCK.release()
 
@@ -180,8 +187,11 @@ def snapshot():
   signals=[dict(x) for x in c.execute('SELECT * FROM signals ORDER BY published DESC,id DESC LIMIT 3000')]
   opportunities=[opportunity(x,signals) for x in c.execute('SELECT * FROM opportunities')]
   sources=[dict(x) for x in c.execute('SELECT * FROM sources')]
+  tasks=[dict(x) for x in c.execute('SELECT * FROM search_tasks')]
+  leads=[dict(x) for x in c.execute('SELECT * FROM leads ORDER BY score DESC,discovered DESC')]
+  for lead in leads:lead['matches']=[x[0] for x in c.execute('SELECT task_id FROM lead_matches WHERE lead_id=?',(lead['id'],))]
  opportunities.sort(key=lambda o:o['score'],reverse=True)
- return {'signals':signals,'opportunities':opportunities,'sources':sources,'topics':{k:v['name'] for k,v in TOPICS.items()},'generated':now(),'total_signals':len(signals),'runtime':dict(RUNTIME)}
+ return {'signals':signals,'opportunities':opportunities,'sources':sources,'topics':{k:v['name'] for k,v in TOPICS.items()},'generated':now(),'total_signals':len(signals),'runtime':dict(RUNTIME),'leads':leads,'search_tasks':tasks,'search_provider':os.environ.get('RADAR_SEARCH_PROVIDER','bing'),'search_key_present':bool(os.environ.get('BRAVE_SEARCH_API_KEY'))}
 
 def report():
  d=snapshot();lines=['# 个人需求雷达 · 研究简报',f"\n生成时间（UTC）：{d['generated']}",'\n证据排序不代表市场规模或收益预测。资讯自动归为热度；求购与付费需人工核实。']
@@ -189,6 +199,10 @@ def report():
   lines += [f"\n## {o['title']} · {o['confidence']}",o['reason'],f"目标用户：{o['buyer']}",f"下一步验证：{o['test']}",f"已录收入 ¥{o['revenue']:.2f}；成本 ¥{o['cost']:.2f}；差额 ¥{o['profit']:.2f}（不含未录入人工等成本）"]
   for s in d['signals']:
    if s['id'] in o['signal_ids']:lines.append(f"- [{KINDS[s['kind']]}] {s['title']} — {s['url'] or s['source']}")
+ lines+=['\n## 自动搜索候选需求（未经核实）']
+ for lead in d['leads']:
+  if lead['status']!='dismissed':lines.extend([f"- {lead['title']} — {lead['url']}",f"  理由：{lead['reason']}；原文日期：{lead['published'] or '未知，不保证近期有效'}"])
+ lines+=['\n## 搜索任务状态']+[f"- {t['name']}：{t['error'] or ('最近成功 '+t['last_ok'] if t['last_ok'] else '尚未搜索')}" for t in d['search_tasks']]
  lines+=['\n## 采集状态']+[f"- {s['name']}：{s['error'] or ('最近成功 '+s['last_ok'] if s['last_ok'] else '尚未采集')}" for s in d['sources']]
  return '\n'.join(lines)
 
@@ -218,6 +232,24 @@ class Handler(BaseHTTPRequestHandler):
    data=json.loads(self.rfile.read(size));path=self.path
    if path=='/api/collect':return self.send(200,collect())
    if path=='/api/signals':return self.send(200,{'added':add_signal(data)})
+   if path=='/api/search-task':
+    name=clean(data.get('name'),100);query=clean(data.get('query'),240);topic=data.get('topic')
+    if not name or not query or topic not in TOPICS:raise ValueError('请填写任务名称、搜索词和方向')
+    with connect() as c:
+     if data.get('id'):
+      cur=c.execute('UPDATE search_tasks SET name=?,query=?,topic=?,last_run=NULL,last_ok=NULL,error=NULL,last_total=NULL,last_filtered=NULL,last_added=NULL WHERE id=?',(name,query,topic,int(data['id'])))
+      if cur.rowcount!=1:raise ValueError('任务不存在')
+     else:
+      if c.execute('SELECT COUNT(*) FROM search_tasks').fetchone()[0]>=20:raise ValueError('最多 20 个搜索任务')
+      c.execute('INSERT INTO search_tasks(name,query,topic) VALUES(?,?,?)',(name,query,topic))
+    return self.send(200,{'ok':True})
+   if path=='/api/search-task/toggle':
+    with connect() as c:c.execute('UPDATE search_tasks SET enabled=? WHERE id=?',(int(bool(data.get('enabled'))),int(data['id'])))
+    return self.send(200,{'ok':True})
+   if path=='/api/lead':
+    if data.get('status') not in ('new','saved','dismissed'):raise ValueError('无效状态')
+    with connect() as c:c.execute('UPDATE leads SET status=? WHERE id=?',(data['status'],int(data['id'])))
+    return self.send(200,{'ok':True})
    if path=='/api/signal/delete':
     with connect() as c:c.execute('DELETE FROM signals WHERE id=?',(int(data['id']),))
    elif path=='/api/opportunity':

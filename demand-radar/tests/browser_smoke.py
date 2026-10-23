@@ -31,6 +31,17 @@ with tempfile.TemporaryDirectory() as tmp:
    page.locator('[data-page=overview]').click();page.locator('[data-detail]').filter(has_text='查看').first.click()
    page.select_option('#opForm [name=stage]','presell');page.fill('#opForm [name=inquiries]','3');page.fill('#opForm [name=revenue]','600');page.fill('#opForm [name=cost]','100');page.click('#opForm .full');page.wait_for_selector('#detailDialog',state='hidden')
    page.reload();page.wait_for_selector('.card');assert '¥600' in page.locator('#stats').inner_text()
+   # Confirm task editing and discovery-to-follow-up without manual evidence entry.
+   page.locator('[data-page=sources]').click();page.wait_for_selector('[data-task-edit]');assert page.locator('[data-task-edit]').count()==6
+   page.locator('[data-task-edit]').first.click();page.fill('#taskForm [name=query]','苏州 民宿 找设计师 -招聘');page.click('#taskForm button[type=submit], #taskForm .primary');page.wait_for_function("document.querySelector('#taskList').innerText.includes('苏州 民宿 找设计师')")
+   # Seed an explicit test fixture in the temporary DB, never user data.
+   import sqlite3
+   with sqlite3.connect(str(Path(tmp)/'radar.sqlite3')) as c:
+    c.execute("INSERT INTO leads(title,summary,url,topic,category,score,reason,query,discovered) VALUES(?,?,?,?,?,?,?,?,?)",('测试夹具：民宿寻找庭院设计师','这是测试数据，不是真实市场线索','https://example.com/test-demand','landscape','buyer',60,'测试匹配理由','测试关键词','2026-10-23T08:00:00+00:00'))
+   page.reload();page.wait_for_selector('.auto-lead');assert '原文日期未知' in page.locator('.auto-lead').inner_text()
+   page.click('[data-lead][data-status=saved]');page.wait_for_selector('.auto-lead',state='hidden');page.select_option('#leadFilter','saved');page.wait_for_selector('.auto-lead')
+   page.reload();page.wait_for_selector('.card');page.select_option('#leadFilter','saved');page.wait_for_selector('.auto-lead')
+   page.click('[data-lead][data-status=dismissed]');page.wait_for_selector('.auto-lead',state='hidden');page.select_option('#leadFilter','dismissed');page.wait_for_selector('.auto-lead');page.click('[data-lead][data-status=new]');page.wait_for_selector('.auto-lead',state='hidden')
    page.locator('[data-page=sources]').click()
    with page.expect_download() as dl:page.click('#report')
    assert dl.value.suggested_filename=='demand-radar-report.md'

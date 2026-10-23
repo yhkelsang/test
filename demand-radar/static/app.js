@@ -14,9 +14,20 @@ function render(){
  $('#clock').textContent=new Date().toLocaleDateString('zh-CN',{timeZone:'Asia/Shanghai',month:'long',day:'numeric',weekday:'long'});
  const strong=state.signals.filter(s=>['request','paid'].includes(s.kind)).length;
  const sum=k=>state.opportunities.reduce((a,o)=>a+o[k],0);
- $('#stats').innerHTML=[['已记录线索',state.total_signals,'去重保存 · 保留原始来源'],['求购 / 付费记录',strong,'人工标记 · 仍需核实'],['实际询价',sum('inquiries'),'来自你填写的跟进记录'],['已录收入',`¥${money(sum('revenue'))}`,'实际记录 · 不是预计收入']].map(([a,b,c])=>`<div class="stat"><label>${a}</label><strong>${b}</strong><small>${c}</small></div>`).join('');
- renderCards();renderSignals();renderSources();
- if(!$('#formTopic').options.length){$('#formTopic').innerHTML=options(state.topics);$('#topicFilter').insertAdjacentHTML('beforeend',options(state.topics));}
+ $('#stats').innerHTML=[['自动发现候选',state.leads.filter(l=>l.status!=='dismissed').length,'公开搜索结果 · 去重保存'],['待查看需求',state.leads.filter(l=>l.status==='new').length,'自动筛选 · 不是已核实订单'],['实际询价',sum('inquiries'),'来自你填写的跟进记录'],['已录收入',`¥${money(sum('revenue'))}`,'实际记录 · 不是预计收入']].map(([a,b,c])=>`<div class="stat"><label>${a}</label><strong>${b}</strong><small>${c}</small></div>`).join('');
+ renderLeads();renderTasks();renderCards();renderSignals();renderSources();
+ if(!$('#formTopic').options.length){$('#formTopic').innerHTML=options(state.topics);$('#topicFilter').insertAdjacentHTML('beforeend',options(state.topics));$('#taskTopic').innerHTML=options(state.topics);}
+}
+function renderLeads(){
+ const tasks=state.search_tasks,failed=tasks.filter(t=>t.enabled&&t.error),attempted=tasks.some(t=>t.last_run),ok=tasks.filter(t=>t.enabled&&t.last_ok&&!t.error);
+ $('#discoveryHealth').innerHTML=failed.length?`<div class="info-box warning"><strong>${failed.length} 个搜索任务未成功</strong><p>搜索失败不等于没有需求。${ok.length?`其他 ${ok.length} 个任务成功；下方保留已发现结果。`:'当前未取得新的搜索结果；已有记录仍保留。'} 请到“采集与运行”查看具体错误。</p></div>`:(!attempted?'<div class="info-box"><strong>等待第一次自动搜索</strong><p>启动后会自动执行；也可以点击右上角“立即自动搜索”。</p></div>':'');
+ const list=state.leads.filter(l=>!$('#leadFilter').value||l.status===$('#leadFilter').value);
+ $('#leadList').innerHTML=list.length?list.slice(0,50).map(l=>`<article class="signal auto-lead"><div class="signal-meta"><span class="tag">${l.category==='tender'?'采购 / 招标候选':'疑似服务委托'}</span><span>${esc(state.topics[l.topic])}</span><span>自动发现 · 未核实</span><span>${esc(l.published?'原文日期：'+date(l.published):'原文日期未知，不保证近期有效')}</span></div><h3>${esc(l.title)}</h3><p>${esc(l.summary)}</p><p class="match-reason">推荐理由：${esc(l.reason)}</p><div class="signal-meta"><span>发现于 ${esc(date(l.discovered))}</span><span>搜索词：${esc(l.query)}</span><span>匹配优先级 ${l.score}（不是成交概率）</span></div><div class="lead-actions"><a class="btn primary" href="${esc(l.url)}" target="_blank" rel="noopener noreferrer">查看原始需求 ↗</a>${l.status!=='saved'?`<button class="btn secondary" data-lead="${l.id}" data-status="saved">收藏跟进</button>`:''}${l.status!=='dismissed'?`<button class="link-button" data-lead="${l.id}" data-status="dismissed">忽略</button>`:`<button class="link-button" data-lead="${l.id}" data-status="new">恢复待查看</button>`}</div></article>`).join('')+(list.length>50?'<p class="muted">当前显示前 50 条；更多记录可导出 JSON 查看。</p>':''):`<div class="empty">${$('#leadFilter').value==='new'?'暂无待查看候选需求':'这个分类暂无结果'}。<br>${failed.length?'请在“采集与运行”检查网络与错误详情。':attempted?'任务已运行，但没有通过筛选的新结果。可修改或扩充搜索词。':'系统正在准备搜索，无需先录入。'}</div>`;
+ $('#taskSummary').innerHTML=tasks.filter(t=>t.enabled).map(t=>`<span class="tag">${esc(t.name)}</span>`).join('')||'<p class="muted">没有启用的任务，请到“采集与运行”启用或添加。</p>';
+}
+function renderTasks(){
+ $('#providerStatus').textContent=state.search_provider==='brave'?'Brave Search API · '+(state.search_key_present?'本机已配置密钥（不显示内容）':'尚未配置密钥，搜索会失败'):'Bing 公开网页 RSS · 无需 API 密钥；可用性取决于本机网络和搜索接口';
+ $('#taskList').innerHTML=state.search_tasks.map(t=>`<div class="source-row"><div><h3>${esc(t.name)} <span class="tag">${t.enabled?'已启用':'已暂停'}</span></h3><p>搜索：${esc(t.query)}</p><p>最近尝试：${esc(date(t.last_run))} · 最近成功：${esc(date(t.last_ok))}</p>${t.error?`<p class="source-error">搜索失败：${esc(t.error)}</p>`:t.last_ok?`<p>本次返回 ${t.last_total??0} 条 · 过滤 ${t.last_filtered??0} 条 · 新增 ${t.last_added??0} 条（其余可能重复）</p>`:'<p>尚未执行</p>'}</div><div class="buttons"><button class="link-button" data-task-edit="${t.id}">修改</button><button class="btn secondary" data-task-toggle="${t.id}">${t.enabled?'暂停':'启用'}</button></div></div>`).join('');
 }
 function renderCards(){const list=state.opportunities.filter(o=>!$('#stageFilter').value||o.stage===$('#stageFilter').value);$('#cards').innerHTML=list.map(o=>`<article class="card"><div class="card-top"><span class="tag">${esc(state.topics[o.topic])}</span><span class="status">${esc(stages[o.stage])}</span></div><h3>${esc(o.title)}</h3><p class="description">${esc(o.buyer)}</p><div class="evidence"><span>求购 ${o.counts.request}</span><span>付费 ${o.counts.paid}</span><span>痛点 ${o.counts.pain}</span><span>资讯 ${o.counts.trend}</span></div><p>${esc(o.confidence)} · 近 30 天</p><div class="card-bottom"><span class="score"><strong>${o.score}</strong>/ 100 证据分</span><button class="link-button" data-detail="${o.id}">查看与跟进 ↗</button></div></article>`).join('')||'<div class="empty">这个阶段暂无项目</div>';}
 function renderSignals(){const q=$('#search').value.toLowerCase(),kind=$('#kindFilter').value,topic=$('#topicFilter').value;
@@ -31,6 +42,9 @@ function openDetail(id){detailId=Number(id);const o=state.opportunities.find(o=>
 document.addEventListener('click',async e=>{const b=e.target.closest('button');if(!b)return;try{
  if(b.dataset.page){active=b.dataset.page;document.querySelectorAll('.page').forEach(p=>p.hidden=p.id!==active);document.querySelectorAll('nav button').forEach(n=>n.classList.toggle('active',n===b));}
  if(b.dataset.detail)openDetail(b.dataset.detail);
+ if(b.dataset.lead){await api('/api/lead',{id:Number(b.dataset.lead),status:b.dataset.status});await load();}
+ if(b.dataset.taskToggle){const t=state.search_tasks.find(t=>t.id===Number(b.dataset.taskToggle));await api('/api/search-task/toggle',{id:t.id,enabled:!t.enabled});await load();}
+ if(b.dataset.taskEdit){const t=state.search_tasks.find(t=>t.id===Number(b.dataset.taskEdit));const f=$('#taskForm');for(const k of ['id','name','query','topic'])f.elements[k].value=t[k];f.scrollIntoView({behavior:'smooth',block:'center'});}
  if(b.hasAttribute('data-close-detail'))$('#detailDialog').close();
  if(b.dataset.delete&&confirm('确认删除这条证据？关联方向的分数会重新计算。')){await api('/api/signal/delete',{id:Number(b.dataset.delete)});await load();}
  if(b.dataset.toggle){const s=state.sources.find(s=>s.id===Number(b.dataset.toggle));await api('/api/source/toggle',{id:s.id,enabled:!s.enabled});await load();}
@@ -39,9 +53,12 @@ $('#newSignal').onclick=()=>{$('#signalForm').reset();$('#signalForm').elements.
 $('#signalDialog .close').onclick=()=>$('#signalDialog').close();
 $('#signalForm').onsubmit=async e=>{e.preventDefault();try{const d=Object.fromEntries(new FormData(e.target));d.published+='T00:00:00+08:00';const result=await api('/api/signals',d);$('#signalDialog').close();await load();notice(result.added?'线索已保存。证据分已更新。':'这条标题已存在，未重复保存。');}catch(e){alert(e.message);}};
 $('#sourceForm').onsubmit=async e=>{e.preventDefault();try{await api('/api/sources',Object.fromEntries(new FormData(e.target)));e.target.reset();await load();notice('RSS 已添加，点击“采集一次”检验连通性。');}catch(e){notice(e.message);}};
-$('#refresh').onclick=async()=>{const b=$('#refresh');b.disabled=true;b.textContent='正在采集…';try{const d=await api('/api/collect',{});await load();notice(d.busy?'已有采集任务在运行。':`本次新增 ${d.added} 条线索；${d.results.filter(r=>r.error).length} 个源失败。请到“采集与运行”查看状态。`);}catch(e){notice(e.message);}finally{b.disabled=false;b.textContent='↻ 采集一次';}};
+$('#refresh').onclick=async()=>{const b=$('#refresh');b.disabled=true;b.textContent='正在搜索…';try{const d=await api('/api/collect',{});await load();notice(d.busy?'已有采集任务在运行。':`本次新增 ${d.added} 条候选/资讯；${d.results.filter(r=>r.error).length} 个搜索或订阅任务失败。请到“采集与运行”查看状态。`);}catch(e){notice(e.message);}finally{b.disabled=false;b.textContent='↻ 立即自动搜索';}};
+$('#taskForm').onsubmit=async e=>{e.preventDefault();try{await api('/api/search-task',Object.fromEntries(new FormData(e.target)));e.target.reset();await load();notice('搜索任务已保存，下次自动搜索时生效，也可立即搜索。');}catch(e){notice(e.message);}};
+$('#cancelTask').onclick=()=>{$('#taskForm').reset();$('#taskForm').elements.id.value='';};
+$('#leadFilter').onchange=renderLeads;
 $('#stageFilter').onchange=renderCards;['search','kindFilter','topicFilter'].forEach(id=>$('#'+id).addEventListener('input',renderSignals));
 async function download(url,name){try{const r=await fetch(url);if(!r.ok)throw Error('导出失败');const blob=await r.blob(),u=URL.createObjectURL(blob),a=document.createElement('a');a.href=u;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(u),1000);}catch(e){notice(e.message);}}
 $('#report').onclick=()=>download('/api/report','demand-radar-report.md');$('#export').onclick=()=>download('/api/export','demand-radar-data.json');
 load().catch(e=>notice('无法连接本地服务：'+e.message));
-setInterval(async()=>{if(document.hidden||$('#detailDialog').open||$('#signalDialog').open)return;try{const old=state?.total_signals??0;await load();if(state.total_signals>old)notice(`后台新增 ${state.total_signals-old} 条线索，请到证据库查看。`);}catch{}},60000);
+setInterval(async()=>{if(document.hidden||$('#detailDialog').open||$('#signalDialog').open)return;try{const old=state?.leads.filter(l=>l.status!=='dismissed').length??0;await load();const current=state.leads.filter(l=>l.status!=='dismissed').length;if(current>old)notice(`系统自动发现 ${current-old} 条候选需求，请在首页查看。`);}catch{}},60000);
