@@ -1,0 +1,47 @@
+'use strict';
+let state=null,active='overview',detailId=null;
+const $=s=>document.querySelector(s);
+const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const stages={hypothesis:'待验证',research:'访谈中',presell:'报价 / 付费小样',building:'交付中',selling:'已成交 / 复购',archived:'暂存'};
+const kinds={trend:'资讯 / 热度',pain:'具体痛点',request:'明确求购',paid:'付费证据'};
+const money=n=>Number(n).toLocaleString('zh-CN',{maximumFractionDigits:2});
+const date=v=>v?new Date(v).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}):'尚未运行';
+function notice(t){$('#notice').textContent=t;$('#notice').hidden=false;}
+async function api(path,data){const r=await fetch(path,data?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}:{});let d;try{d=await r.json();}catch{throw Error('服务器响应异常');}if(!r.ok)throw Error(d.error||'请求失败');return d;}
+async function load(){state=await api('/api/state');render();}
+function options(obj,value){return Object.entries(obj).map(([k,v])=>`<option value="${esc(k)}" ${k===value?'selected':''}>${esc(v)}</option>`).join('');}
+function render(){
+ $('#clock').textContent=new Date().toLocaleDateString('zh-CN',{timeZone:'Asia/Shanghai',month:'long',day:'numeric',weekday:'long'});
+ const strong=state.signals.filter(s=>['request','paid'].includes(s.kind)).length;
+ const sum=k=>state.opportunities.reduce((a,o)=>a+o[k],0);
+ $('#stats').innerHTML=[['已记录线索',state.total_signals,'去重保存 · 保留原始来源'],['求购 / 付费记录',strong,'人工标记 · 仍需核实'],['实际询价',sum('inquiries'),'来自你填写的跟进记录'],['已录收入',`¥${money(sum('revenue'))}`,'实际记录 · 不是预计收入']].map(([a,b,c])=>`<div class="stat"><label>${a}</label><strong>${b}</strong><small>${c}</small></div>`).join('');
+ renderCards();renderSignals();renderSources();
+ if(!$('#formTopic').options.length){$('#formTopic').innerHTML=options(state.topics);$('#topicFilter').insertAdjacentHTML('beforeend',options(state.topics));}
+}
+function renderCards(){const list=state.opportunities.filter(o=>!$('#stageFilter').value||o.stage===$('#stageFilter').value);$('#cards').innerHTML=list.map(o=>`<article class="card"><div class="card-top"><span class="tag">${esc(state.topics[o.topic])}</span><span class="status">${esc(stages[o.stage])}</span></div><h3>${esc(o.title)}</h3><p class="description">${esc(o.buyer)}</p><div class="evidence"><span>求购 ${o.counts.request}</span><span>付费 ${o.counts.paid}</span><span>痛点 ${o.counts.pain}</span><span>资讯 ${o.counts.trend}</span></div><p>${esc(o.confidence)} · 近 30 天</p><div class="card-bottom"><span class="score"><strong>${o.score}</strong>/ 100 证据分</span><button class="link-button" data-detail="${o.id}">查看与跟进 ↗</button></div></article>`).join('')||'<div class="empty">这个阶段暂无项目</div>';}
+function renderSignals(){const q=$('#search').value.toLowerCase(),kind=$('#kindFilter').value,topic=$('#topicFilter').value;
+ const list=state.signals.filter(s=>(!kind||s.kind===kind)&&(!topic||s.topic===topic)&&`${s.title} ${s.body} ${s.source}`.toLowerCase().includes(q));
+ $('#signalList').innerHTML=list.map(s=>`<article class="signal"><div class="signal-meta"><span class="tag">${esc(kinds[s.kind])}</span><span>${esc(state.topics[s.topic])}</span><span>${esc(date(s.published))}</span></div><h3>${esc(s.title)}</h3><p>${esc(s.body||'暂无补充说明')}</p><div class="signal-footer"><div class="signal-meta"><span>${esc(s.source)}</span>${s.url?`<a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">核对原始来源 ↗</a>`:''}</div><button class="link-button danger" data-delete="${s.id}">删除</button></div></article>`).join('')||'<div class="empty">还没有符合条件的需求线索。<br>录入一条公开需求帖或访谈记录，开始积累真实证据。</div>';}
+function renderSources(){$('#runtime').textContent=state.runtime.automatic?`定时采集已开启 · 每 ${state.runtime.interval_seconds/60} 分钟一次 · 下次：${date(state.runtime.next_run)}`:'当前服务未开启定时采集（可手动采集或另运行 watch）';$('#sourceList').innerHTML=state.sources.map(s=>`<div class="source-row"><div><h3>${esc(s.name)} <span class="tag">${s.enabled?'已启用':'已暂停'}</span></h3><p>${esc(s.url)}</p><p>最近尝试：${esc(date(s.last_run))} · 最近成功：${esc(date(s.last_ok))}</p>${s.error?`<p class="source-error">采集失败：${esc(s.error)}。当前源未取得新数据，请检查网络、RSS 地址或访问权限。</p>`:'<p>自动采集内容一律按资讯 / 热度保存，不自动认定为求购。</p>'}</div><button class="btn secondary" data-toggle="${s.id}">${s.enabled?'暂停':'启用'}</button></div>`).join('');}
+function openDetail(id){detailId=Number(id);const o=state.opportunities.find(o=>o.id===detailId);$('#detail').innerHTML=`<div class="dialog-head"><div><span class="eyebrow">OPPORTUNITY / ${esc(state.topics[o.topic])}</span><h2>${esc(o.title)}</h2></div><button class="close" type="button" data-close-detail>×</button></div><div class="detail-block"><h3>为什么是这个证据分？ ${o.score} / 100</h3><p>${esc(o.reason)}</p><p>计分：资讯 +2、痛点 +8、求购 +18、付费 +25，上限 100；没有求购/付费时最多 25，仅一个独立来源时最多 55。按原始网站或访谈代号粗略区分来源，不代表已审计独立性。</p></div><div class="detail-block"><h3>最小交付与验证</h3><p><strong>交付：</strong>${esc(o.deliverable)}</p><p><strong>下一步：</strong>${esc(o.test)}</p><p><strong>边界：</strong>${esc(o.boundary)}</p></div><div class="detail-block"><h3>关联证据</h3>${o.signal_ids.length?state.signals.filter(s=>o.signal_ids.includes(s.id)).map(s=>`<p><span class="tag">${esc(kinds[s.kind])}</span> ${esc(s.title)} ${s.url?`<a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">原文 ↗</a>`:`(${esc(s.source)})`}</p>`).join(''):'<p>目前没有近 30 天的真实线索。请先访谈，不急着制作完整产品。</p>'}</div><form id="opForm"><div class="detail-block"><h3>委托与收入跟进</h3><label>当前阶段<select name="stage">${options(stages,o.stage)}</select></label><div class="metrics">${[['price','试验报价 / ¥'],['views','案例曝光 / 次'],['inquiries','实际询价 / 次'],['orders','付费订单 / 单'],['revenue','累计实收 / ¥'],['cost','累计已录成本 / ¥']].map(([k,v])=>`<label>${v}<input name="${k}" type="number" min="0" max="10000000000" step="${['views','inquiries','orders'].includes(k)?'1':'0.01'}" value="${o[k]}" required></label>`).join('')}</div><p>收支差额 ¥${money(o.profit)}，仅按已录金额计算，不含尚未记录的人工、税费与其他成本。</p><label>需求范围 / 修改轮次 / 未成交原因<textarea name="notes" rows="3">${esc(o.notes)}</textarea></label><button class="btn primary full">保存跟进</button></div></form><div class="detail-block"><h3>带着证据使用 AI</h3><p>复制到你已有的 AI 工具中。系统当前不调用模型，也不收集 API 密钥。</p><div class="prompt">${esc(o.prompt)}</div><button id="copyPrompt" class="btn secondary" style="margin-top:12px">复制制作与验证提示词</button></div>`;
+ if(!$('#detailDialog').open)$('#detailDialog').showModal();
+ $('#opForm').onsubmit=async e=>{e.preventDefault();try{const d=Object.fromEntries(new FormData(e.target));d.id=detailId;await api('/api/opportunity',d);await load();$('#detailDialog').close();notice('跟进记录已保存。');}catch(e){alert(e.message);}};
+ $('#copyPrompt').onclick=async()=>{try{await navigator.clipboard.writeText(o.prompt);$('#copyPrompt').textContent='已复制';}catch{alert('当前浏览器无法自动复制，请选中提示词手动复制。');}};
+}
+document.addEventListener('click',async e=>{const b=e.target.closest('button');if(!b)return;try{
+ if(b.dataset.page){active=b.dataset.page;document.querySelectorAll('.page').forEach(p=>p.hidden=p.id!==active);document.querySelectorAll('nav button').forEach(n=>n.classList.toggle('active',n===b));}
+ if(b.dataset.detail)openDetail(b.dataset.detail);
+ if(b.hasAttribute('data-close-detail'))$('#detailDialog').close();
+ if(b.dataset.delete&&confirm('确认删除这条证据？关联方向的分数会重新计算。')){await api('/api/signal/delete',{id:Number(b.dataset.delete)});await load();}
+ if(b.dataset.toggle){const s=state.sources.find(s=>s.id===Number(b.dataset.toggle));await api('/api/source/toggle',{id:s.id,enabled:!s.enabled});await load();}
+ }catch(e){notice(e.message);}});
+$('#newSignal').onclick=()=>{$('#signalForm').reset();$('#signalForm').elements.published.value=new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Shanghai'});$('#signalDialog').showModal();};
+$('#signalDialog .close').onclick=()=>$('#signalDialog').close();
+$('#signalForm').onsubmit=async e=>{e.preventDefault();try{const d=Object.fromEntries(new FormData(e.target));d.published+='T00:00:00+08:00';const result=await api('/api/signals',d);$('#signalDialog').close();await load();notice(result.added?'线索已保存。证据分已更新。':'这条标题已存在，未重复保存。');}catch(e){alert(e.message);}};
+$('#sourceForm').onsubmit=async e=>{e.preventDefault();try{await api('/api/sources',Object.fromEntries(new FormData(e.target)));e.target.reset();await load();notice('RSS 已添加，点击“采集一次”检验连通性。');}catch(e){notice(e.message);}};
+$('#refresh').onclick=async()=>{const b=$('#refresh');b.disabled=true;b.textContent='正在采集…';try{const d=await api('/api/collect',{});await load();notice(d.busy?'已有采集任务在运行。':`本次新增 ${d.added} 条线索；${d.results.filter(r=>r.error).length} 个源失败。请到“采集与运行”查看状态。`);}catch(e){notice(e.message);}finally{b.disabled=false;b.textContent='↻ 采集一次';}};
+$('#stageFilter').onchange=renderCards;['search','kindFilter','topicFilter'].forEach(id=>$('#'+id).addEventListener('input',renderSignals));
+async function download(url,name){try{const r=await fetch(url);if(!r.ok)throw Error('导出失败');const blob=await r.blob(),u=URL.createObjectURL(blob),a=document.createElement('a');a.href=u;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(u),1000);}catch(e){notice(e.message);}}
+$('#report').onclick=()=>download('/api/report','demand-radar-report.md');$('#export').onclick=()=>download('/api/export','demand-radar-data.json');
+load().catch(e=>notice('无法连接本地服务：'+e.message));
+setInterval(async()=>{if(document.hidden||$('#detailDialog').open||$('#signalDialog').open)return;try{const old=state?.total_signals??0;await load();if(state.total_signals>old)notice(`后台新增 ${state.total_signals-old} 条线索，请到证据库查看。`);}catch{}},60000);
